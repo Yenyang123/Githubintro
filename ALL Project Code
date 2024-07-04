@@ -1,0 +1,733 @@
+import csv
+import tkinter as tk
+from tkinter import messagebox, Toplevel
+from tkinter import PhotoImage
+from tkinter import Canvas
+import sqlite3
+from PIL import Image, ImageTk
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+
+
+# Initialize the database
+def initialize_db():
+    conn = sqlite3.connect('inventory.db')
+    c = conn.cursor()
+
+    # Create users table if it doesn't exist
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+                    username TEXT PRIMARY KEY,
+                    password TEXT NOT NULL,
+                    role TEXT NOT NULL)''')
+    c.execute("INSERT OR IGNORE INTO users (username, password, role) VALUES ('admin', '1', 'Administrator')")
+    c.execute("INSERT OR IGNORE INTO users (username, password, role) VALUES ('manager', 'manager123', 'Manager')")
+
+    # Create the new inventory table with ItemID
+    c.execute('''CREATE TABLE IF NOT EXISTS inventory_new (
+                    ItemID INTEGER PRIMARY KEY AUTOINCREMENT,
+                    item TEXT NOT NULL,
+                    quantity INTEGER NOT NULL,
+                    supplier TEXT,
+                    position TEXT)''')
+
+    # Migrate data from old inventory table to new one
+    c.execute("SELECT item, quantity, supplier, position FROM inventory")
+    old_data = c.fetchall()
+    c.executemany("INSERT INTO inventory_new (item, quantity, supplier, position) VALUES (?, ?, ?, ?)", old_data)
+
+    # Drop old inventory table and rename new one
+    c.execute("DROP TABLE IF EXISTS inventory")
+    c.execute("ALTER TABLE inventory_new RENAME TO inventory")
+
+    # Create tasks table if it doesn't exist
+    c.execute('''CREATE TABLE IF NOT EXISTS tasks (
+                         TaskID INTEGER PRIMARY KEY AUTOINCREMENT,
+                         task TEXT NOT NULL,
+                         worker TEXT,
+                         completed INTEGER DEFAULT 0,
+                         highlighted INTEGER DEFAULT 0,
+                         FOREIGN KEY(worker) REFERENCES users(username))''')
+
+    #c.execute('''ALTER TABLE tasks ADD COLUMN highlighted INTEGER DEFAULT 0''')
+
+    conn.commit()
+    conn.close()
+
+# Function to check login credentials
+def login():
+    username = username_entry.get()
+    password = password_entry.get()
+    role = role_var.get()
+
+    conn = sqlite3.connect('inventory.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM users WHERE username = ? AND password = ? AND role = ?", (username, password, role))
+    user = c.fetchone()
+    conn.close()
+
+    if user:
+        messagebox.showinfo("Login Successful", f"Welcome, {username}!\nRole: {role}")
+        open_inventory_window(role,username,1)
+    else:
+        messagebox.showerror("Login Failed", "Incorrect username, password, or role!")
+
+
+# Function to open the inventory window
+# Function to open the inventory window
+def open_inventory_window(role, username, i):
+    inventory_window = tk.Toplevel(root)
+    inventory_window.title("Inventory Management")
+
+
+    # Header label
+    tk.Label(inventory_window, text=f"Inventory - Logged in as {username}", font=("Helvetica", 16, "bold")).grid(row=0, column=0, columnspan=7, pady=10)
+
+    # Table headers
+    tk.Label(inventory_window, text="ItemID").grid(row=1, column=0, padx=10, pady=5)
+    tk.Label(inventory_window, text="Item").grid(row=1, column=1, padx=10, pady=5)
+    tk.Label(inventory_window, text="Quantity").grid(row=1, column=2, padx=10, pady=5)
+    tk.Label(inventory_window, text="Supplier").grid(row=1, column=3, padx=10, pady=5)
+    tk.Label(inventory_window, text="Position").grid(row=1, column=4, padx=10, pady=5)
+    tk.Label(inventory_window, text="Update Quantity").grid(row=1, column=5, padx=10, pady=5)
+    tk.Label(inventory_window, text="").grid(row=1, column=6, padx=10, pady=5)  # For the confirm button
+    tk.Label(inventory_window, text="").grid(row=1, column=7, padx=10, pady=5)  # For the details button
+    tk.Label(inventory_window, text="").grid(row=1, column=8, padx=10, pady=5)  # For the delete button
+
+
+    # Fetch and display inventory items
+    def load_inventory():
+        for widget in inventory_window.winfo_children():
+            if int(widget.grid_info()["row"]) > 1:
+                widget.destroy()
+
+        conn = sqlite3.connect('inventory.db')
+        c = conn.cursor()
+        c.execute("SELECT * FROM inventory")
+        items = c.fetchall()
+        conn.close()
+
+        item_labels = {}
+        for idx, (item_id, item, quantity, supplier, position) in enumerate(items, start=2):
+            tk.Label(inventory_window, text=item_id).grid(row=idx, column=0, padx=10, pady=5)
+            tk.Label(inventory_window, text=item).grid(row=idx, column=1, padx=10, pady=5)
+            qty_label = tk.Label(inventory_window, text=quantity)
+            qty_label.grid(row=idx, column=2, padx=10, pady=5)
+            tk.Label(inventory_window, text=supplier).grid(row=idx, column=3, padx=10, pady=5)
+            tk.Label(inventory_window, text=position).grid(row=idx, column=4, padx=10, pady=5)
+            new_qty_var = tk.StringVar()
+            qty_entry = tk.Entry(inventory_window, textvariable=new_qty_var)
+            qty_entry.grid(row=idx, column=5, padx=10, pady=5)
+            confirm_button = tk.Button(inventory_window, text="Confirm",
+                                       command=lambda item_id=item_id, var=new_qty_var: update_quantity(item_id, var, item_labels))
+            confirm_button.grid(row=idx, column=6, padx=10, pady=5)
+            details_button = tk.Button(inventory_window, text="Details",
+                                       command=lambda item_id=item_id: show_details(item_id))
+            details_button.grid(row=idx, column=7, padx=10, pady=5)
+
+
+            if role == "Administrator":
+                delete_button = tk.Button(inventory_window, text="Delete",
+                                      command=lambda item_id=item_id: delete_item(item_id))
+                delete_button.grid(row=idx, column=8, padx=10, pady=5)
+            item_labels[item_id] = qty_label
+            if role == "Administrator":
+                edit_button = tk.Button(inventory_window, text="Edit",
+                                        command=lambda item_id=item_id: open_edit_item_window(item_id))
+                edit_button.grid(row=idx, column=9, padx=10, pady=5)
+
+
+    load_inventory()
+
+    # Fetch and display inventory items
+    conn = sqlite3.connect('inventory.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM inventory")
+    items = c.fetchall()
+    conn.close()
+
+
+
+    def update_quantity(item_id, new_qty_var, item_labels):
+        try:
+            new_qty = int(new_qty_var.get())
+            conn = sqlite3.connect('inventory.db')
+            c = conn.cursor()
+            c.execute("UPDATE inventory SET quantity = quantity + ? WHERE ItemID = ?", (new_qty, item_id))
+            conn.commit()
+            c.execute("SELECT quantity FROM inventory WHERE ItemID = ?", (item_id,))
+            updated_qty = c.fetchone()[0]
+            conn.close()
+            item_labels[item_id].config(text=updated_qty)
+            new_qty_var.set('')  # Clear the entry after update
+
+            # Check if the updated quantity is below the threshold and show a warning message
+            if updated_qty < 10:
+                messagebox.showwarning("Low Inventory", f"Warning: quantity is below 10!")
+        except ValueError:
+            messagebox.showerror("Invalid Input", "Please enter a valid number.")
+
+    def show_details(item_id):
+        conn = sqlite3.connect('inventory.db')
+        c = conn.cursor()
+        c.execute("SELECT * FROM inventory WHERE ItemID = ?", (item_id,))
+        item_details = c.fetchone()
+        conn.close()
+
+        if item_details:
+            details_window = tk.Toplevel(inventory_window)
+            details_window.title(f"Details for {item_details[1]}")
+            tk.Label(details_window, text=f"ItemID: {item_details[0]}", font=("Helvetica", 14)).pack(pady=10)
+            tk.Label(details_window, text=f"Item: {item_details[1]}", font=("Helvetica", 14)).pack(pady=10)
+            tk.Label(details_window, text=f"Quantity: {item_details[2]}", font=("Helvetica", 14)).pack(pady=10)
+            tk.Label(details_window, text=f"Supplier: {item_details[3]}", font=("Helvetica", 14)).pack(pady=10)
+            tk.Label(details_window, text=f"Position: {item_details[4]}", font=("Helvetica", 14)).pack(pady=10)
+
+    def delete_item(item_id):
+        conn = sqlite3.connect('inventory.db')
+        c = conn.cursor()
+        c.execute("DELETE FROM inventory WHERE ItemID = ?", (item_id,))
+        conn.commit()
+        conn.close()
+        load_inventory()  # Refresh the inventory list
+        inventory_window.destroy()
+        messagebox.showinfo("Success", "Item deleted successfully.")
+        open_inventory_window(role, username, i)
+
+    def open_edit_item_window(item_id):
+        conn = sqlite3.connect('inventory.db')
+        c = conn.cursor()
+        c.execute("SELECT * FROM inventory WHERE ItemID = ?", (item_id,))
+        item_details = c.fetchone()
+        conn.close()
+
+        if item_details:
+            edit_item_window = tk.Toplevel(inventory_window)
+            edit_item_window.title(f"Edit Item {item_id}")
+
+            tk.Label(edit_item_window, text="Item").grid(row=0, column=0, padx=10, pady=5)
+            item_var = tk.StringVar(value=item_details[1])
+            item_entry = tk.Entry(edit_item_window, textvariable=item_var)
+            item_entry.grid(row=0, column=1, padx=10, pady=5)
+
+            tk.Label(edit_item_window, text="Quantity").grid(row=1, column=0, padx=10, pady=5)
+            quantity_var = tk.StringVar(value=item_details[2])
+            quantity_entry = tk.Entry(edit_item_window, textvariable=quantity_var)
+            quantity_entry.grid(row=1, column=1, padx=10, pady=5)
+
+            tk.Label(edit_item_window, text="Supplier").grid(row=2, column=0, padx=10, pady=5)
+            supplier_var = tk.StringVar(value=item_details[3])
+            supplier_entry = tk.Entry(edit_item_window, textvariable=supplier_var)
+            supplier_entry.grid(row=2, column=1, padx=10, pady=5)
+
+            tk.Label(edit_item_window, text="Position").grid(row=3, column=0, padx=10, pady=5)
+            position_var = tk.StringVar(value=item_details[4])
+            position_entry = tk.Entry(edit_item_window, textvariable=position_var)
+            position_entry.grid(row=3, column=1, padx=10, pady=5)
+
+            def save_item_changes():
+                conn = sqlite3.connect('inventory.db')
+                c = conn.cursor()
+                c.execute("UPDATE inventory SET item = ?, quantity = ?, supplier = ?, position = ? WHERE ItemID = ?",
+                          (item_var.get(), quantity_var.get(), supplier_var.get(), position_var.get(), item_id))
+                conn.commit()
+                conn.close()
+                messagebox.showinfo("Success", "Item updated successfully.")
+                edit_item_window.destroy()
+                load_inventory()  # Refresh the inventory list
+                inventory_window.destroy()
+                open_inventory_window(role, username, i)
+
+            save_button = tk.Button(edit_item_window, text="Save Changes", command=save_item_changes)
+            save_button.grid(row=4, column=0, columnspan=2, pady=10)
+
+    def open_assign_task_window():
+        assign_task_window = tk.Toplevel(inventory_window)
+        assign_task_window.title("Assign Task")
+
+        tk.Label(assign_task_window, text="Select Worker:", font=("Helvetica", 12, "bold")).grid(row=0, column=0,
+                                                                                                 padx=10, pady=5)
+        worker_var = tk.StringVar(assign_task_window)
+        worker_dropdown = tk.OptionMenu(assign_task_window, worker_var, *get_worker_list())
+        worker_dropdown.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
+
+        tk.Label(assign_task_window, text="Task:", font=("Helvetica", 12, "bold")).grid(row=1, column=0, padx=10,
+                                                                                        pady=5)
+        task_entry = tk.Entry(assign_task_window)
+        task_entry.grid(row=1, column=1, padx=10, pady=5)
+
+        def assign_task():
+            worker = worker_var.get()
+            task = task_entry.get()
+            if worker and task:
+                conn = sqlite3.connect('inventory.db')
+                c = conn.cursor()
+                c.execute("INSERT INTO tasks (task, worker) VALUES (?, ?)", (task, worker))
+                conn.commit()
+                conn.close()
+                messagebox.showinfo("Success", "Task assigned successfully!")
+                assign_task_window.destroy()
+            else:
+                messagebox.showerror("Error", "Please select a worker and enter a task.")
+
+        tk.Button(assign_task_window, text="Assign Task", command=assign_task).grid(row=2, columnspan=2, pady=10)
+
+    def get_worker_list():
+        conn = sqlite3.connect('inventory.db')
+        c = conn.cursor()
+        c.execute("SELECT username FROM users WHERE role = 'Worker'")
+        workers = c.fetchall()
+        conn.close()
+        return [worker[0] for worker in workers]
+
+    def load_worker_tasks(listbox, username):
+        listbox.delete(0, tk.END)
+        conn = sqlite3.connect('inventory.db')
+        c = conn.cursor()
+        c.execute("SELECT TaskID, task, completed FROM tasks WHERE worker = ?", (username,))
+        tasks = c.fetchall()
+        conn.close()
+        for index, (task_id, task, completed) in enumerate(tasks, start=1):
+            task_status = "Done" if completed else "Pending"
+            task_str = f"{index}. {task} [{task_status}]"
+            listbox.insert(tk.END, task_str)
+
+            # Add a button to mark task as completed (only if task is pending)
+            if not completed:
+                mark_button = tk.Button(listbox, text="Mark as Done",
+                                        command=lambda t=task_id: mark_task_completed(t))
+                listbox.insert(tk.END, "")
+                listbox.window_create(tk.END, window=mark_button)
+
+            # Add a delete button for admin and manager
+            if role in ['Administrator', 'Manager']:
+                delete_button = tk.Button(listbox, text="Delete",
+                                          command=lambda t=task_id: delete_task(t))
+                listbox.insert(tk.END, "")
+                listbox.window_create(tk.END, column=3, height=10, window=delete_button)
+
+        listbox.config(height=len(tasks) + 7, width=30)
+
+    def delete_task(task_id):
+        conn = sqlite3.connect('inventory.db')
+        c = conn.cursor()
+        c.execute("DELETE FROM tasks WHERE TaskID = ?", (task_id,))
+        conn.commit()
+        conn.close()
+        # Refresh the task list after deleting
+        load_worker_tasks(task_listbox, username)
+
+
+
+    def load_tasks():
+        tasks_window = tk.Toplevel(inventory_window)
+        tasks_window.title("Tasks Assigned to Workers")
+
+        tk.Label(tasks_window, text="Tasks Assigned to Workers", font=("Helvetica", 16, "bold")).grid(row=0, column=0,
+                                                                                                      columnspan=2,
+                                                                                                      pady=10)
+
+        # Create a listbox to display tasks
+        tasks_listbox = tk.Listbox(tasks_window, height=15, width=50)
+        tasks_listbox.grid(row=1, column=0, columnspan=2, padx=10, pady=10)
+
+        # Function to fetch and display tasks
+        conn = sqlite3.connect('inventory.db')
+        c = conn.cursor()
+        c.execute("SELECT username FROM users WHERE role='Worker'")
+        workers = c.fetchall()
+        for worker in workers:
+            c.execute("SELECT task FROM tasks WHERE worker=?", (worker[0],))
+            tasks = c.fetchall()
+            if tasks:
+                tasks_listbox.insert(tk.END, f"Worker: {worker[0]}")
+                for task in tasks:
+                    tasks_listbox.insert(tk.END, f" - {task[0]}")
+                tasks_listbox.insert(tk.END, "")  # Blank line between workers
+
+        conn.close()
+
+    def mark_task_completed(task_id):
+        conn = sqlite3.connect('inventory.db')
+        c = conn.cursor()
+        c.execute("UPDATE tasks SET completed = 1 WHERE TaskID = ?", (task_id,))
+        conn.commit()
+        conn.close()
+        # Refresh the task list after marking as completed
+        load_worker_tasks(task_listbox, username)
+
+    def open_add_worker_window():
+        add_worker_window = tk.Toplevel(inventory_window)
+        add_worker_window.title("Add Worker")
+
+        tk.Label(add_worker_window, text="Username:").grid(row=0, column=0, padx=10, pady=5)
+        new_username_entry = tk.Entry(add_worker_window)
+        new_username_entry.grid(row=0, column=1, padx=10, pady=5)
+
+        tk.Label(add_worker_window, text="Password:").grid(row=1, column=0, padx=10, pady=5)
+        new_password_entry = tk.Entry(add_worker_window, show="*")
+        new_password_entry.grid(row=1, column=1, padx=10, pady=5)
+
+        tk.Label(add_worker_window, text="Role:").grid(row=2, column=0, padx=10, pady=5)
+        new_role_var = tk.StringVar(add_worker_window)
+        new_role_var.set("Worker")  # Default role is Worker
+        new_role_dropdown = tk.OptionMenu(add_worker_window, new_role_var, "Worker", "Manager", "Administrator")
+        new_role_dropdown.grid(row=2, column=1, padx=10, pady=5, sticky="ew")
+
+        def add_worker():
+            new_username = new_username_entry.get()
+            new_password = new_password_entry.get()
+            new_role = new_role_var.get()
+
+            if new_username and new_password:
+                conn = sqlite3.connect('inventory.db')
+                c = conn.cursor()
+                try:
+                    c.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
+                              (new_username, new_password, new_role))
+                    conn.commit()
+                    messagebox.showinfo("Success", "New worker added successfully!")
+                    # Refresh worker list
+                    refresh_worker_list()
+                except sqlite3.IntegrityError:
+                    messagebox.showerror("Error", "Username already exists!")
+                conn.close()
+            else:
+                messagebox.showerror("Error", "Please fill out all fields!")
+
+        def refresh_worker_list():
+            conn = sqlite3.connect('inventory.db')
+            c = conn.cursor()
+            c.execute("SELECT username FROM users WHERE role='Worker'")
+            workers = c.fetchall()
+            conn.close()
+
+            # Clear the listbox
+            worker_listbox.delete(0, tk.END)
+
+            # Insert workers into the listbox
+            for worker in workers:
+                worker_listbox.insert(tk.END, worker[0])
+
+        def delete_worker():
+            selected_index = worker_listbox.curselection()
+            if selected_index:
+                worker_name = worker_listbox.get(selected_index)
+                conn = sqlite3.connect('inventory.db')
+                c = conn.cursor()
+                c.execute("DELETE FROM users WHERE username=?", (worker_name,))
+                conn.commit()
+                conn.close()
+                # Refresh worker list
+                refresh_worker_list()
+
+        # Button to add worker
+        add_worker_button = tk.Button(add_worker_window, text="Add Worker", command=add_worker)
+        add_worker_button.grid(row=3, columnspan=2, pady=10)
+
+        # Button to delete selected worker
+        delete_worker_button = tk.Button(add_worker_window, text="Delete Worker", command=delete_worker)
+        delete_worker_button.grid(row=7, columnspan=2, pady=10)
+
+        # Worker list label
+        tk.Label(add_worker_window, text="Worker List:", font=("Helvetica", 12, "bold")).grid(row=4, column=0,
+                                                                                              columnspan=2,
+                                                                                              padx=10, pady=5)
+
+        # Worker listbox
+        worker_listbox = tk.Listbox(add_worker_window, height=10, width=30)
+        worker_listbox.grid(row=5, column=0, columnspan=2, padx=10, pady=5)
+
+        # Button to refresh worker list
+        refresh_button = tk.Button(add_worker_window, text="Refresh List", command=refresh_worker_list)
+        refresh_button.grid(row=6, columnspan=2, pady=10)
+
+    # Function to open the add item window
+    def open_add_item_window():
+        add_item_window = tk.Toplevel(inventory_window)
+        add_item_window.title("Add Item")
+
+        tk.Label(add_item_window, text="Item Name:").grid(row=0, column=0, padx=10, pady=5)
+        item_name_entry = tk.Entry(add_item_window)
+        item_name_entry.grid(row=0, column=1, padx=10, pady=5)
+
+        tk.Label(add_item_window, text="Quantity:").grid(row=1, column=0, padx=10, pady=5)
+        item_quantity_entry = tk.Entry(add_item_window)
+        item_quantity_entry.grid(row=1, column=1, padx=10, pady=5)
+
+        tk.Label(add_item_window, text="Supplier:").grid(row=2, column=0, padx=10, pady=5)
+        item_supplier_entry = tk.Entry(add_item_window)
+        item_supplier_entry.grid(row=2, column=1, padx=10, pady=5)
+
+        tk.Label(add_item_window, text="Position:").grid(row=3, column=0, padx=10, pady=5)
+        item_position_entry = tk.Entry(add_item_window)
+        item_position_entry.grid(row=3, column=1, padx=10, pady=5)
+
+        def add_item():
+            item_name = item_name_entry.get()
+            item_quantity = item_quantity_entry.get()
+            item_supplier = item_supplier_entry.get()
+            item_position = item_position_entry.get()
+
+            if item_name and item_quantity and item_supplier and item_position:
+                try:
+                    item_quantity = int(item_quantity)
+                    conn = sqlite3.connect('inventory.db')
+                    c = conn.cursor()
+                    try:
+                        c.execute("INSERT INTO inventory (item, quantity, supplier, position) VALUES (?, ?, ?, ?)",
+                                  (item_name, item_quantity, item_supplier, item_position))
+                        conn.commit()
+                        messagebox.showinfo("Success", "New item added successfully!")
+                        add_item_window.destroy()
+                        inventory_window.destroy()
+                        open_inventory_window(role, username,i)
+                    except sqlite3.IntegrityError:
+                        messagebox.showerror("Error", "Item already exists!")
+                    conn.close()
+                except ValueError:
+                    messagebox.showerror("Error", "Please enter a valid quantity!")
+            else:
+                messagebox.showerror("Error", "Please fill out all fields!")
+
+        tk.Button(add_item_window, text="Add Item", command=add_item).grid(row=4, columnspan=2, pady=10)
+
+    task_listbox = tk.Listbox(inventory_window)
+    task_listbox.grid(row=2, column=10, rowspan=7, padx=10, pady=5)
+    if role == "Worker":
+        tk.Label(inventory_window, text="Assigned Tasks", font=("Helvetica", 16, "bold")).grid(row=1, column=10,
+                                                                                               columnspan=7, pady=10)
+        load_worker_tasks(task_listbox, username)
+
+    if role in ["Manager", "Administrator"]:
+        tk.Button(inventory_window, text="Assign Task", command=open_assign_task_window).grid(row=0, column=11, padx=10,
+                                                                                              pady=5)
+
+    # Button to view tasks assigned to workers
+    if role in ['Manager', 'Administrator']:
+        tk.Button(inventory_window, text="View Tasks", command=load_tasks).grid(row=0, column=13, padx=10, pady=10,
+                                                                                    sticky='e')
+
+    # Add Worker button (only for Administrators)
+    if role == 'Administrator':
+        tk.Button(inventory_window, text="Add Worker", command=open_add_worker_window, bg='lightblue').grid(
+            row=len(items) + 2, column=0, columnspan=6, pady=10)
+
+    # Add Item button (for Managers and Administrators)
+    if role in ['Manager', 'Administrator']:
+        tk.Button(inventory_window, text="Add Item", command=open_add_item_window, bg='lightgreen').grid(
+            row=len(items) + 3, column=0, columnspan=6, pady=10)
+
+
+    # Log out button
+    def logout():
+        inventory_window.destroy()
+        messagebox.showinfo("Logged Out", "You have been logged out successfully.")
+
+    logout_button = tk.Button(inventory_window, text="Logout", command=logout)
+    logout_button.grid(row=0, column=10, padx=10, pady=10, sticky='e')
+
+    def generate_report():
+        conn = sqlite3.connect('inventory.db')
+        c = conn.cursor()
+
+        # Fetch inventory data
+        c.execute("SELECT * FROM inventory")
+        inventory_data = c.fetchall()
+
+        # Fetch tasks data
+        c.execute("SELECT * FROM tasks")
+        tasks_data = c.fetchall()
+
+        conn.close()
+
+        with open('report.csv', 'w', newline='') as file:
+            writer = csv.writer(file)
+
+            # Write inventory data
+            writer.writerow(["Inventory Report"])
+            writer.writerow(["ItemID", "Item", "Quantity", "Supplier", "Position"])
+            for row in inventory_data:
+                writer.writerow(row)
+
+            writer.writerow([])  # Empty row
+
+            # Write tasks data
+            writer.writerow(["Tasks Report"])
+            writer.writerow(["TaskID", "Task", "Worker", "Completed", "Highlighted"])
+            for row in tasks_data:
+                writer.writerow(row)
+
+        messagebox.showinfo("Report Generated", "The report has been generated and saved as 'report.csv'.")
+
+    # Example of how to integrate this into a button
+    generate_report_button = tk.Button(inventory_window, text="Generate Report", command=generate_report)
+    generate_report_button.grid(row=0, column=4, columnspan=7, pady=10)
+
+    def open_csv_window():
+        # Create a new window
+        csv_window = tk.Toplevel(inventory_window)
+        csv_window.title("CSV Report")
+
+        # Create a Text widget in the new window
+        text_widget = tk.Text(csv_window, wrap='none')
+        text_widget.pack(expand=True, fill='both')
+
+        # Create a Scrollbar for the Text widget
+        scrollbar_y = tk.Scrollbar(csv_window, command=text_widget.yview)
+        scrollbar_y.pack(side='right', fill='y')
+        text_widget.config(yscrollcommand=scrollbar_y.set)
+
+        scrollbar_x = tk.Scrollbar(csv_window, orient='horizontal', command=text_widget.xview)
+        scrollbar_x.pack(side='bottom', fill='x')
+        text_widget.config(xscrollcommand=scrollbar_x.set)
+
+        # Open the CSV file and insert its content into the Text widget
+        with open('report.csv', 'r') as file:
+            csv_content = file.read()
+            text_widget.insert('1.0', csv_content)
+
+        text_widget.config(state='disabled')
+
+    # Example of how to integrate this into a button
+    open_csv_button = tk.Button(inventory_window, text="Open CSV Report", command=open_csv_window)
+    open_csv_button.grid(row=0, column=6, columnspan=7, pady=10)
+
+    def show_dashboard(username, role):
+        dashboard_window = tk.Toplevel()
+        dashboard_window.title("Dashboard")
+
+        tk.Label(dashboard_window, text=f"Welcome {username}").pack()
+
+        # Task listbox and scrollbar
+        task_frame = tk.Frame(dashboard_window)
+        task_frame.pack(fill=tk.BOTH, expand=1)
+
+        scrollbar = tk.Scrollbar(task_frame, orient=tk.VERTICAL)
+        task_listbox = tk.Listbox(task_frame, yscrollcommand=scrollbar.set, selectmode=tk.SINGLE)
+        scrollbar.config(command=task_listbox.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        task_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=1)
+
+        def refresh_task_list():
+            conn = sqlite3.connect('inventory.db')
+            c = conn.cursor()
+            c.execute("SELECT TaskID, task FROM tasks")
+            tasks = c.fetchall()
+            conn.close()
+            task_listbox.delete(0, tk.END)
+            for task in tasks:
+                task_listbox.insert(tk.END, f"{task[0]}: {task[1]}")
+
+        def delete_task():
+            def confirm_delete():
+                selected_task = task_listbox.get(tk.ACTIVE)
+                if selected_task:
+                    task_id = selected_task.split(":")[0]  # Assuming the task format is "TaskID: Task Description"
+                    conn = sqlite3.connect('inventory.db')
+                    c = conn.cursor()
+                    c.execute("DELETE FROM tasks WHERE TaskID=?", (task_id,))
+                    conn.commit()
+                    conn.close()
+                    messagebox.showinfo("Task Deleted", "Task successfully deleted.")
+                    refresh_task_list()  # Refresh the task list after deletion
+
+            selected_task = task_listbox.get(tk.ACTIVE)
+            if selected_task:
+                if messagebox.askyesno("Delete Task", "Are you sure you want to delete the selected task?"):
+                    confirm_delete()
+
+        # Initial population of the task list
+        refresh_task_list()
+
+        refresh_button = tk.Button(dashboard_window, text="Refresh Task List", command=refresh_task_list)
+        refresh_button.pack(pady=10)
+
+        # Delete task button for Manager and Administrator
+        if role in ['Manager', 'Administrator']:
+            delete_task_button = tk.Button(dashboard_window, text="Delete Task", command=delete_task)
+            delete_task_button.pack(pady=10)
+
+    # Main application
+    def main():
+        root = tk.Tk()
+        root.withdraw()  # Hide the root window as we will use Toplevel for the dashboard
+
+        # Example usage
+        username = "John"
+        role = "Manager"
+        show_dashboard(username, role)
+
+        root.mainloop()
+
+    if __name__ == "__main__":
+        main()
+        # More dashboard components and functionalities here...
+
+    # Function to refresh the task list (add this if not already present in your code)
+    def refresh_task_list():
+        conn = sqlite3.connect('inventory.db')
+        c = conn.cursor()
+        c.execute("SELECT TaskID, task FROM tasks")
+        tasks = c.fetchall()
+        conn.close()
+        task_listbox.delete(0, tk.END)
+        for task in tasks:
+            task_listbox.insert(tk.END, f"{task[0]}: {task[1]}")
+
+# Create main window
+root = tk.Tk()
+root.title("Inventory Management System")
+
+
+# Load the image
+try:
+    img = PhotoImage(file="All project photo image.png")
+    img_label = tk.Label(root, image=img)
+    img_label.grid(row=0, column=0, columnspan=1, padx=10, pady=10)
+except Exception as e:
+    messagebox.showerror("Error", f"Failed to load image: {e}")
+
+
+# Set background color
+root.configure(background='lightblue')
+
+# Header label
+header_label = tk.Label(root, text="TikTiak Inventory System", font=("Helvetica", 20, "bold"), bg='white')
+header_label.grid(row=0, column=0, columnspan=2, pady=10)
+
+
+# Frame for login content
+login_frame = tk.Frame(root, bg='white', padx=20, pady=20)
+login_frame.grid(row=0, column=1, padx=10, pady=10)
+
+# Username label and entry
+username_label = tk.Label(login_frame, text="Username:", bg='white')
+username_label.grid(row=0, column=0, sticky="w", pady=5)
+username_entry = tk.Entry(login_frame)
+username_entry.grid(row=0, column=1, padx=5, pady=5)
+
+# Password label and entry
+password_label = tk.Label(login_frame, text="Password:", bg='white')
+password_label.grid(row=1, column=0, sticky="w", pady=5)
+password_entry = tk.Entry(login_frame, show="*")
+password_entry.grid(row=1, column=1, padx=5, pady=5)
+
+# Role label and dropdown
+role_label = tk.Label(login_frame, text="Role:", bg='white')
+role_label.grid(row=2, column=0, sticky="w", pady=5)
+roles = ['Administrator', 'Manager', 'Worker']
+role_var = tk.StringVar(root)
+role_var.set(roles[0])  # Default role is Administrator
+role_dropdown = tk.OptionMenu(login_frame, role_var, *roles)
+role_dropdown.grid(row=2, column=1, padx=5, pady=5, sticky="ew")
+
+# Login button
+login_button = tk.Button(login_frame, text="Login", command=login, bg='lightblue')
+login_button.grid(row=3, columnspan=2, pady=10)
+
+# Initialize the database
+initialize_db()
+
+# Run the Tkinter event loop
+root.mainloop()
